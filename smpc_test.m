@@ -133,9 +133,56 @@ function [feas, xOpt, uOpt, xhat, predErr] = MPC_stochastic(A, b, C, L, P, x0, x
     end
 end
 
+function phi_inv = quantile(p)
+    phi_inv = sqrt(2) * 1/erf(2 * p - 1);
+end
 
+% assuming linearity for now, can be extended to a nonlinear function later
+function [feas, xOpt, uOpt, xhat, predErr] = solve_ucftoc(A, b, C, L, P, x0, x_cov, N,...
+                                                      Q, R, H, g, f, h, f_cov, h_cov, tr)
+    nu = size(B, 2);
+    nx = size(A, 2);
+    x = sdpvar(nx, N+1);  % include x0 in this
+    u = sdpvar(nu, N);
+
+    cost = (x(:,N+1) - target_x)' * P * (x(:,N+1) - target_x);
+    for i =[1:N]
+      cost = cost + (x(:,i) - target_x)'*Q*(x(:,i)-target_x) + u(:,i)'*R*u(:,i);
+    end
+    
+    
+    constraints = [uL <= u(:,1) <= uU];
+    index = 2;
+    for i = 1:N-1
+      constraints = [constraints; uL <= u(:,index) <= uU];
+      index = index + 1;
+    end
+    
+    if isempty(Af)
+      constraints = vertcat(constraints, x(:,N+1) == bf);
+    else
+      constraints = vertcat(constraints, Af * x(:,N+1) <= bf);
+    end
+
+    options = sdpsettings('verbose', 0);
+    diag = optimize(constraints, cost, options);
+    if diag.problem == 0
+      feas = 1;
+      xOpt = value(x);
+      uOpt = value(u);
+      JOpt = value(cost);
+    else
+      feas = 0;
+      xOpt = [];
+      uOpt = [];
+      JOpt = inf;
+    end
+end
+                                                  
 function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC(A, b, C, L, P, x0, x0hat, M, N, sigma,...
                                                       Q, R, xL, xU, uL, uU)
+    cov_f = zeros(nx);  % covariance of dynamics function 
+    cov_h = zeros(ny);  % covariance of measurement function
     % Procedure:
     % At each timestep, make a measurement
     % Pass this measurement through the ukf to obtain the state estimate
@@ -144,14 +191,52 @@ function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC(A, b, C, L, P, x0, x0hat, M
     % https://arxiv.org/pdf/1709.01201.pdf, using the propagation 
     % of the covariances to generate chance constraints
     % uses a robust time horizon to avoid the covariance 'blowing up' 
+    
+    % assume we have a u from MPC, and we now apply it to the system
+    % then we make a measurement of the true system y
+    
+    u_mpc = 0;  % from solve_ucftoc
+    [x_pred, cov_x_pred, sigma_pts_prop, wm0, wc0, ws] = propagate_mean_cov(x, cov_prev, f, u_mpc, nx, cov_f);
+    [y_pred, cov_y_pred, cov_xy_pred] = generate_output_prediction(sigma_pts_prop, x_pred, wm0, wc0, ws, h, cov_h);
+    y_meas = h(true_sys_output);
+    [x_update, cov_update] = ukf_update(x_pred, y_pred, cov_x_pred, cov_y_pred, cov_xy_pred, y_meas);
     return;
 end
 
+function [y_pred, cov_y_pred, cov_xy] = generate_output_prediction(sigma_pts_prop, x_pred, wm0, wc0, ws, h, cov_h)
+    L = size(sigma_pts_prop, 2);
+    L = (L - 1)/2;
+    sigma_pts_output = zeros(size(sigma_pts_prop));
+    for i = 1:2*L+1
+        sigma_pts_output(:,i) = h(sigma_pts_prop(:,i));
+    end
+    y_pred = sigma_pts_output(:,1) * wm0;
+    
+    for i = 2:2*L+1
+        y_pred = y_pred + ws(i) * sigma_pts_output(:,i);
+    end
+    
+    cov_y_pred = cov_h + wc0 * (sigma_pts_output(:,1)-y_pred)*...
+        (sigma_pts_output(:,1)-y_pred)';
+    cov_xy = wc0 * (sigma_pts_prop(:,1) - x_pred) * (sigma_pts_output(:,1) - y_pred)';
+    for i = 2:2*L+1
+        cov_y_pred = cov_y_pred + ws(i) * (sigma_pts_output(:,i) - y_pred)*...
+            (sigma_pts_output(:,i) - y_pred)';
+        cov_xy = cov_xy + ws(i) * (sigma_pts_prop(:,i) - x_pred)*...
+            (sigma_pts_output(:,i) - y_pred)'; 
+    end
+end
+
+function [x_new, cov_new] = ukf_update(x_pred, y_pred, cov_x, cov_y, cov_xy, y)
+    K = cov_xy/cov_v;
+    x_new = x + K * (y - y_pred);
+    cov_new = cov_x - K * cov_y * K';
+end
 
 % f is dynamics function
 % does one predict step
 % implementation of https://arxiv.org/pdf/1709.01201.pdf
-function [mean_pred, cov_pred] = propagate_mean_cov(x, cov_x, f, u, nx, cov_f)
+function [mean_pred, cov_pred, sigma_pts_prop, wm0, wc0, ws] = propagate_mean_cov(x, cov_x, f, u, nx, cov_f)
     alpha = 1e-3;
     beta = 2;
     kappa = 0;
@@ -176,14 +261,17 @@ function [mean_pred, cov_pred] = propagate_mean_cov(x, cov_x, f, u, nx, cov_f)
     sigma_pts_prop = zeros(nx, 2*L+1);
     sigma_pts_prop(:,1) = f(sigma_pts(:,1), u);
     mean_pred = wm0 * sigma_pts_prop(:,1);
-    cov_pred = cov_f + wc0 * (sigma_pts_prop(:,1)-mean_pred)*...
-        (sigma_pts_prop(:,1)-mean_pred)';
     
     for i=2:2*L+1
         sigma_pts_prop(:,i) = f(sigma_pts(:,i), u);
         mean_pred = mean_pred + ws(i) * sigma_pts_prop(:,i);
+        
+    end
+    
+    cov_pred = cov_f + wc0 * (sigma_pts_prop(:,1)-mean_pred)*...
+        (sigma_pts_prop(:,1)-mean_pred)';
+    for i = 2:2*L + 1
         cov_pred = cov_pred + ws(i) * (sigma_pts_prop(:,i) - mean_pred)*...
             (sigma_pts_prop(:,i) - mean_pred)';
     end
-    
 end
