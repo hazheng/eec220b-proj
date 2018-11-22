@@ -66,10 +66,6 @@ function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_linear(A, b, C, P, x0, x0ha
         feas(i) = 1;
         pred_trajs(:,:,i) = xo(:,2:end);
         uOpt(i) = uo(1);
-        if i == 2
-            disp("hello");
-        end
-
         xOpt(:,i+1) = A * xOpt(:,i) + b * uOpt(i) + cov_f * randn(2,1);
         [x_pred, cov_x_pred, sigma_pts_prop, wm0, wc0, ws] = propagate_mean_cov(xhat(:,i), xCovs(:,:,i), f, uOpt(i), nx, cov_f);
         [y_pred, cov_y_pred, cov_xy_pred] = generate_output_prediction(sigma_pts_prop, x_pred, wm0, wc0, ws, h, cov_h);

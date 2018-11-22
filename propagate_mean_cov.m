@@ -45,7 +45,7 @@ function [mean_pred, cov_pred, sigma_pts_prop, wm0, wc0, ws] = propagate_mean_co
     
     cov_pred = cov_f + wc0 * (sigma_pts_prop(:,1)-mean_pred)*...
         (sigma_pts_prop(:,1)-mean_pred)';
-    for i = 2:2*L
+    for i = 2:2*L+1
         cov_pred = cov_pred + ws(i-1) * (sigma_pts_prop(:,i) - mean_pred)*...
             (sigma_pts_prop(:,i) - mean_pred)';
     end

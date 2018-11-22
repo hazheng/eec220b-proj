@@ -42,11 +42,11 @@ function [feas, xOpt, uOpt, JOpt] = solve_ucftoc(A, b, P, x0, x_cov, N,...
         
         % reformulation as a probabilistic constraint based on covariance
         % reformulation as per https://arxiv.org/pdf/1709.01201.pdf
-%         for j=1:nc
-%             constraints = [constraints;
-%                 (quantile(p(j)) * sqrt(H(j,:) * covs_tr(:,:,i) * H(j,:)')+...
-%                 H(j,:) * x(:,i)) <= g(j)];
-%         end            
+        for j=1:nc
+            constraints = [constraints;
+                (quantile(p(j)) * sqrt(H(j,:) * covs_tr(:,:,i) * H(j,:)')+...
+                H(j,:) * x(:,i)) <= g(j)];
+        end            
     end
         
 %     options = sdpsettings('verbose', 0);
