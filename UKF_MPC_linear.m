@@ -24,10 +24,10 @@ function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_linear(A, b, C, P, x0, x0ha
         0 -1];
     g = [xU;
         -xL];
-    p = [0.3;
-        0.3;
-        0.3;
-        0.3];
+    p = [0.7;
+        0.7;
+        0.7;
+        0.7];
     
     predErr = zeros(2, M-N+1);
     pred_trajs = zeros(2, N, M);
@@ -47,7 +47,6 @@ function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_linear(A, b, C, P, x0, x0ha
     
     % M is tfinal
     for i=1:M
-        disp(i);
 %         tx = xhat(1,i) - (xOpt(1,i) - xf)/(M - i); % for now using exact state
 %         disp(tx);
 %         % disp(tx);
@@ -57,7 +56,8 @@ function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_linear(A, b, C, P, x0, x0ha
         [f_prob, xo, uo, jo] = solve_ucftoc(A, b, P, xhat(:,i), xCovs(:,:,i), N,...
                                        Q, R, H, g, p, f, cov_f, tr, uL, uU,...
                                        xf);
-                                   
+%         disp(xo);
+        % disp(uo(1));
         if f_prob == 0
             feas(i:end) = 0;
             return
@@ -66,15 +66,21 @@ function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_linear(A, b, C, P, x0, x0ha
         feas(i) = 1;
         pred_trajs(:,:,i) = xo(:,2:end);
         uOpt(i) = uo(1);
-        xOpt(:,i+1) = A * xOpt(:,i) + b * uOpt(i) + cov_f * randn(2,1);
+        noise_f = cov_f * randn(2, 1);
+%         noise_f = zeros(2,1);
+        noise_h = cov_h * randn();
+%         noise_h = 0;
+%         disp(noise_f);
+%         disp(noise_h);
+        
+        xOpt(:,i+1) = A * xOpt(:,i) + b * uOpt(i) + noise_f;
         [x_pred, cov_x_pred, sigma_pts_prop, wm0, wc0, ws] = propagate_mean_cov(xhat(:,i), xCovs(:,:,i), f, uOpt(i), nx, cov_f);
         [y_pred, cov_y_pred, cov_xy_pred] = generate_output_prediction(sigma_pts_prop, x_pred, wm0, wc0, ws, h, cov_h);
-        y_meas = h(xOpt(:,i)) + cov_h * randn();
+        y_meas = h(xOpt(:,i+1)) + noise_h;
         [x_update, cov_update] = ukf_update(x_pred, y_pred, cov_x_pred, cov_y_pred, cov_xy_pred, y_meas);
        
         xhat(:,i+1) = x_update;
         xCovs(:,:,i+1) = cov_update;
-        
         if i > N && i <= M - N
             predErr(1,i-N) = norm(pred_trajs(1,:,i-N) - xOpt(1,i-N+1:i), 2);
             predErr(2,i-N) = norm(pred_trajs(2,:,i-N) - xOpt(2,i-N+1:i), 2);

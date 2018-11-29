@@ -28,12 +28,13 @@ function [mean_pred, cov_pred, sigma_pts_prop, wm0, wc0, ws] = propagate_mean_co
     end
     for i=L+2:(2*L + 1)
         % sigma_pts(:,i) = x + sqrt_cov(i-L,:)';
-        sigma_pts = [sigma_pts, x - sqrt_cov(i-1-L,:)'];
+        sigma_pts = [sigma_pts, x-sqrt_cov(i-1-L,:)'];
     end
     ws = repmat(1/(2 * (L + lambda)), 1, 2 * L);
     % sigma_pts_prop = zeros(nx, 2*L+1);
     % sigma_pts_prop(:,1) = f(sigma_pts(:,1), u);
     sigma_pts_prop = f(sigma_pts(:,1), u);
+    
     mean_pred = wm0 * sigma_pts_prop(:,1);
     
     for i=2:2*L+1

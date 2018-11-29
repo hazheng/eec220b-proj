@@ -31,6 +31,7 @@ function [feas, xOpt, uOpt, JOpt] = solve_ucftoc(A, b, P, x0, x_cov, N,...
     constraints = [constraints; x(:,1) == x0];
     for i=2:N+1
         [mean_pred, cov_pred, sigma_pts_prop, wm0, wc0, ws] = propagate_mean_cov(x(:,i-1), covs_tr(:,:,i-1), f, u(:,i-1), nx, cov_f);
+%         sdisplay(mean_pred);
         constraints = [constraints; x(:,i) == mean_pred];
         if i <= tr
             % covs_tr(:,:,i) = cov_pred;
@@ -44,23 +45,23 @@ function [feas, xOpt, uOpt, JOpt] = solve_ucftoc(A, b, P, x0, x_cov, N,...
         % reformulation as per https://arxiv.org/pdf/1709.01201.pdf
         for j=1:nc
             constraints = [constraints;
-                (quantile(p(j)) * sqrt(H(j,:) * covs_tr(:,:,i) * H(j,:)')+...
+                (quantile(p(j)) * sqrtm(H(j,:) * covs_tr(:,:,i) * H(j,:)')+...
                 H(j,:) * x(:,i)) <= g(j)];
         end            
     end
         
-%     options = sdpsettings('verbose', 0);
-%     diag = optimize(constraints, cost, options);
-    diag = optimize(constraints, cost);
+    options = sdpsettings('verbose', 0);
+    diag = optimize(constraints, cost, options);
+%     diag = optimize(constraints, cost);
     if diag.problem == 0
-      feas = 1;
-      xOpt = value(x);
-      uOpt = value(u);
-      JOpt = value(cost);
+        feas = 1;
+        xOpt = value(x);
+        uOpt = value(u);
+        JOpt = value(cost);
     else
-      feas = 0;
-      xOpt = [];
-      uOpt = [];
-      JOpt = inf;
+        feas = 0;
+        xOpt = [];
+        uOpt = [];
+        JOpt = inf;
     end
 end
