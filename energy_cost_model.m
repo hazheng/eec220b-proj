@@ -1,18 +1,25 @@
 %% Test out energy heuristics / cost models for the high level energy scheduler
 % Mock strategy over the course of a day
 % sim params 
-N_day = 32;
+N_day = 10;
 N = N_day*3;
 dt = 8/N_day; %time unit is in hours, 
 soc_max = 5000; %units in W/h
 pout_max = 50000; % units in W
 % solar = zeros(N,1);
 solar = 1400*sin(linspace(pi/6, 5*pi/6, N_day));
-solar = repmat(solar,1,3);
+solar_cloudy = 700 * sin(linspace(pi/6, 5*pi/6, N_day));
+
+solar = repmat(solar,1,6);
+solar_cloudy = repmat(solar, 1, 6);
+
 %account for evening and morning charge
 energy_evening = 800*4;
 solar(N_day+1) = solar(N_day+1) + energy_evening/dt;
 solar(2*N_day+1) = solar(2*N_day+1)+ energy_evening/dt;
+
+solar_cloudy(N_day+1) = solar_cloudy(N_day+1) + energy_evening/(2 * dt);
+solar_cloudy(2*N_day+1) = solar_cloudy(2*N_day+1)+ energy_evening/(2 * dt);
 
 soc_init = .95*soc_max;
 %%
@@ -47,9 +54,11 @@ subplot(2,1,2)
 plot(u*pout_max)
 %% Testing the Unscented MPC on this global optimization
 f = @(soc, u, i) soc - dt*pout_max*u + solar(i) * dt;
+f_cloudy = @(soc, u, i) soc - dt*pout_max*u + solar_cloudy(i) * dt;
+
 h = @(soc) soc; % assume fine measurement for now
 
-cov_f = 100;  % kind of arbitrarily say 100W of variance in model
+cov_f = 200;  % kind of arbitrarily say 200W of variance in model
 cov_h = 100;  % measurement can be off by 100 Wh (2% of total SoC)
 nx = 1;
 nu = 1;
@@ -63,26 +72,87 @@ x0cov = 10;  % could be off by 10W
 x0hat = .95 * soc_max;
 x0 = .95 * soc_max;
 
-M = N_day;
-N = N_day;
+M = N_day * 3;  % test for 3 days simulation horizon
+N = N_day * 3;
 
 uL = 0;
 uU = 1;
 
 xU = soc_max;
-xL = 0;
+xL = 0.05 * soc_max;
 
-[feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_tv(nx, nu, f, h, P, x0, x0hat, x0cov, M, N,...
-                                                      Q, R, xL, xU, uL, uU, cov_f, cov_h);
+[feas, xOpt, uOpt, xhat, pred_trajs, pred_u] = UKF_MPC_tv(nx, nu, f, f_cloudy, h, P, x0, x0hat, x0cov, M, N,...
+                                      Q, R, xL, xU, uL, uU, cov_f, cov_h);
+%%
+times = linspace(1, 30, 30);                                  
+figure();
+hold on;
+for i = 1:30
+    plot(times+i, pred_trajs(:,:,i));
+end
+title("predicted trajectories UKF MPC");
+hold off;
+figure();
+plot(xOpt);
+title("xOpt UKF MPC");
+figure();
+plot(uOpt*pout_max);
+title("uOpt UKF MPC");
+%% Testing the Naive MPC 
+f = @(soc, u, i) soc - dt*pout_max*u + solar(i) * dt;
+f_cloudy = @(soc, u, i) soc - dt*pout_max*u + solar_cloudy(i) * dt;
+
+h = @(soc) soc; % assume fine measurement for now
+
+cov_f = 200;  % kind of arbitrarily say 200W of variance in model
+cov_h = 100;  % measurement can be off by 100 Wh (2% of total SoC)
+nx = 1;
+nu = 1;
+
+% unused, legacy parameters to make stuff fit
+P = 1;
+Q = 1;
+R = 1;
+
+x0cov = 10;  % could be off by 10W
+x0hat = .95 * soc_max;
+x0 = .95 * soc_max;
+
+M = N_day * 3;  % test for 3 days simulation horizon
+N = N_day * 3;
+
+uL = 0;
+uU = 1;
+
+xU = soc_max;
+xL = 0.05 * soc_max;
+
+[feas, xOpt_naive, uOpt_naive, pred_trajs_naive, pred_u_naive] = MPC_Naive(nx, nu, f, f_cloudy, h, P, x0, M, N,...
+                                      Q, R, xL, xU, uL, uU, cov_f);
+%%
+times = linspace(1, 30, 30);                                  
+figure();
+hold on;
+for i = 1:30
+    plot(times+i, pred_trajs_naive(:,:,i));
+end
+title("pred trajs naive mpc");
+hold off;
+figure();
+plot(xOpt_naive);
+title("xOpt naive MPC");
+figure();
+plot(uOpt_naive*pout_max);
+title("uOpt naive");
 %% functions
 % need to change the damn mpc formulation to account for time-varying
 % solar, so here's all the functions again
 
 % this assumes time-varying f (with constant covariance for now), but time-invariant h
-function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_tv(nx, nu, f, h, P, x0, x0hat, x0cov, M, N,...
+function [feas, xOpt, uOpt, xhat, pred_trajs, pred_u] = UKF_MPC_tv(nx, nu, f, f_cloudy, h, P, x0, x0hat, x0cov, M, N,...
                                                       Q, R, xL, xU, uL, uU, cov_f, cov_h)
     
-    tr = 5;
+    tr = 7;
     H = [1;
         -1];
     
@@ -94,8 +164,9 @@ function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_tv(nx, nu, f, h, P, x0, x0h
         0.9;
         0.9];
     
-    predErr = zeros(nx, M-N+1);
+%     predErr = zeros(nx, M-N+1);
     pred_trajs = zeros(nx, N, M);
+    pred_u = zeros(nu, N, M);
     feas = zeros(1, M);
     xOpt = zeros(nx, M+1);
     
@@ -109,13 +180,42 @@ function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_tv(nx, nu, f, h, P, x0, x0h
     xOpt(:,1) = x0;
     uOpt = zeros(1, M);
     xf = 0;
-    
+    cur_model = 1;  % currently using sunny model
     % M is tfinal
     for i=1:M
         disp(i);
-        f_tv = @(x, u, time) f(x, u, time + i);  % basically shift the time back to account for current timestep
         
-        [f_prob, xo, uo, jo] = solve_ucftoc_timevarying(nx, nu, P, xhat(:,i), xCovs(:,:,i), N,...
+        % Fixing the transitions so can compare with Naive
+        if mod(i, 6) == 0
+            if cur_model == 1
+                cur_model = 0;
+                f_tv = @(x, u, time) f_cloudy(x, u, time+ i);
+            else
+                cur_model = 1;
+                f_tv = @(x, u, time) f(x, u, time + i);
+            end
+        elseif cur_model == 1
+            f_tv = @(x, u, time) f(x, u, time + i);
+        else
+            f_tv = @(x, u, time) f_cloudy(x, u, time+ i);
+        end
+
+%         prob = rand();
+%         if prob > 0.8 && cur_model == 1  % switching to cloudy 
+%             cur_model = 0;
+%             f_tv = @(x, u, time) f_cloudy(x, u, time+ i);
+%         elseif prob > 0.8 && cur_model == 0  % switching to sunny
+%             cur_model = 1;
+%             f_tv = @(x, u, time) f(x, u, time + i);  
+%         elseif cur_model == 1
+%             f_tv = @(x, u, time) f(x, u, time + i);
+%         else
+%             f_tv = @(x, u, time) f_cloudy(x, u, time+ i);
+%         end
+        
+        
+        horz_length = min(N, M + 1 - i);
+        [f_prob, xo, uo, jo] = solve_ucftoc_timevarying(nx, nu, P, xhat(:,i), xCovs(:,:,i), horz_length,...
                                        Q, R, H, g, p, f_tv, cov_f, tr, uL, uU,...
                                        1);
 %         disp(xo);
@@ -126,12 +226,17 @@ function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_tv(nx, nu, f, h, P, x0, x0h
         end
         
         feas(i) = 1;
-        pred_trajs(:,:,i) = xo(:,2:end);
+        pred_trajs(:,:,i) = [xo(:,2:end) zeros(1, N - horz_length)];
+        pred_u(:,:,i) = [uo zeros(1, N - horz_length)];
         uOpt(i) = uo(1);
         noise_f = cov_f * randn(nx, 1);
         noise_h = cov_h * randn();
         
-        xOpt(:,i+1) = f(xOpt(:,i), uOpt(i), i) + noise_f;  % only allowing additive noise for now
+        if cur_model == 0
+            xOpt(:,i+1) = f_cloudy(xOpt(:,i), uOpt(i), i) + noise_f;  % only allowing additive noise for now
+        else
+            xOpt(:,i+1) = f(xOpt(:,i), uOpt(i), i) + noise_f;  % only allowing additive noise for now
+        end
         [x_pred, cov_x_pred, sigma_pts_prop, wm0, wc0, ws] = propagate_mean_cov_tv(xhat(:,i), xCovs(:,:,i), f, uOpt(i), nx, cov_f, i);
         [y_pred, cov_y_pred, cov_xy_pred] = generate_output_prediction(sigma_pts_prop, x_pred, wm0, wc0, ws, h, cov_h);
         y_meas = h(xOpt(:,i+1)) + noise_h;
@@ -139,10 +244,6 @@ function [feas, xOpt, uOpt, xhat, predErr] = UKF_MPC_tv(nx, nu, f, h, P, x0, x0h
        
         xhat(:,i+1) = x_update;
         xCovs(:,:,i+1) = cov_update;
-        if i > N && i <= M - N
-            predErr(1,i-N) = norm(pred_trajs(1,:,i-N) - xOpt(1,i-N+1:i), 2);
-            predErr(2,i-N) = norm(pred_trajs(2,:,i-N) - xOpt(2,i-N+1:i), 2);
-        end
     end    
 end
 
@@ -260,5 +361,107 @@ function [mean_pred, cov_pred, sigma_pts_prop, wm0, wc0, ws] = propagate_mean_co
     for i = 2:2*L+1
         cov_pred = cov_pred + ws(i-1) * (sigma_pts_prop(:,i) - mean_pred)*...
             (sigma_pts_prop(:,i) - mean_pred)';
+    end
+end
+
+function [feas, xOpt, uOpt, JOpt] = solve_cftoc_timevarying(nx, nu, x0, N,...
+                                                            xL, xU, f, uL, uU)
+    % nc = size(A, 1);  % number of rows of A = number of constraints per timestep
+    
+    x = sdpvar(nx, N+1);
+    u = sdpvar(nu, N);
+        
+    cost = 0;
+    for i = [1:N]
+        cost = cost - u(i)^(1/3);
+    end
+    constraints = [];
+    for i = 1:N
+      constraints = [constraints; uL <= u(:,i) <= uU];
+    end
+    
+    constraints = [constraints; x(:,1) == x0];
+    for i=2:N+1
+        constraints = [constraints; 
+            x(:,i) == f(x(:,i-1), u(:,i-1), i-1);
+            xL <= x(:,i) <= xU];
+    end
+    options = sdpsettings('verbose', 0);
+    diag = optimize(constraints, cost, options);
+    if diag.problem == 0
+        feas = 1;
+        xOpt = value(x);
+        uOpt = value(u);
+        JOpt = value(cost);
+    else
+        feas = 0;
+        xOpt = [];
+        uOpt = [];
+        JOpt = inf;
+    end
+end
+
+% assume perfect knowledge
+function [feas, xOpt, uOpt, pred_trajs, pred_u] = MPC_Naive(nx, nu, f, f_cloudy, h, P, x0, M, N,...
+                                                      Q, R, xL, xU, uL, uU, cov_f)
+    pred_trajs = zeros(nx, N, M);
+    pred_u = zeros(nu, N, M);
+    feas = zeros(1, M);
+    xOpt = zeros(nx, M+1);
+        
+    xOpt(:,1) = x0;
+    uOpt = zeros(1, M);
+    cur_model = 1;  % currently using sunny model
+    % M is tfinal
+    for i=1:M
+        disp(i);
+        
+        % Fixing the transitions so can compare with UKF
+        if mod(i, 6) == 0
+            if cur_model == 1
+                cur_model = 0;
+                f_tv = @(x, u, time) f_cloudy(x, u, time+ i);
+            else
+                cur_model = 1;
+                f_tv = @(x, u, time) f(x, u, time + i);
+            end
+        elseif cur_model == 1
+            f_tv = @(x, u, time) f(x, u, time + i);
+        else
+            f_tv = @(x, u, time) f_cloudy(x, u, time+ i);
+        end
+%         prob = rand();
+%         if prob > 0.8 && cur_model == 1  % switching to cloudy 
+%             cur_model = 0;
+%             f_tv = @(x, u, time) f_cloudy(x, u, time+ i);
+%         elseif prob > 0.8 && cur_model == 0  % switching to sunny
+%             cur_model = 1;
+%             f_tv = @(x, u, time) f(x, u, time + i);  
+%         elseif cur_model == 1
+%             f_tv = @(x, u, time) f(x, u, time + i);
+%         else
+%             f_tv = @(x, u, time) f_cloudy(x, u, time+ i);
+%         end
+        
+        horz_length = min(N, M + 1 - i);
+        [f_prob, xo, uo, jo] = solve_cftoc_timevarying(nx, nu, xOpt(:,i), horz_length, xL, xU, f_tv, uL, uU);
+%         disp(xo);
+        % disp(uo(1));
+        if f_prob == 0
+            feas(i:end) = 0;
+            return
+        end
+        
+        feas(i) = 1;
+        pred_trajs(:,:,i) = [xo(:,2:end) zeros(1, N - horz_length)];
+        pred_u(:,:,i) = [uo zeros(1, N - horz_length)];
+        uOpt(i) = uo(1);
+        noise_f = cov_f * randn(nx, 1);
+        
+        if cur_model == 0
+            xOpt(:,i+1) = f_cloudy(xOpt(:,i), uOpt(i), i) + noise_f;  % only allowing additive noise for now
+        else
+            xOpt(:,i+1) = f(xOpt(:,i), uOpt(i), i) + noise_f;  % only allowing additive noise for now
+        end
     end
 end
