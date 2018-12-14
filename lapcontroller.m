@@ -28,7 +28,7 @@ v = sdpvar(1,segs);
 q = sdpvar(1,segs+1);
 options = sdpsettings('verbose',0);
 
-constr = [0 <= q <= Q];
+constr = [0 <= q <= Q,q(end) == 0];
 J = sum(tracksegs(1,:)./v);
 for j = 1:segs
     constr = [constr,vmin <= v(j) <= min(vmax,segsplims(j)),    ...
